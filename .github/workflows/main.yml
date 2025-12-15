@@ -5,17 +5,22 @@ on:
 
 jobs:
   run-vm:
+    # Selalu gunakan runner yang menyediakan disk yang cukup
     runs-on: ubuntu-latest
     
     steps:
       - name: 1. Install QEMU + NoVNC
         run: |
+          echo "--- MEMPERBARUI DAN MENGINSTALL QEMU/NOVNC ---"
           sudo apt-get update
-          sudo apt-get install -y qemu-kvm qemu-utils novnc websockify
+          # Menginstal paket dasar yang diperlukan
+          sudo apt-get install -y qemu-kvm qemu-utils novnc websockify wget
+          # Membuat link simbolik untuk akses novnc yang lebih mudah melalui URL
           sudo ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
 
       - name: 2. Hitung & Buat Disk Virtual Dinamis
         run: |
+          echo "--- MENGHITUNG UKURAN DISK VIRTUAL ---"
           # 1. Mengukur ruang disk yang tersedia (dalam KB) di direktori kerja
           DISK_AVAILABLE_KB=$(df --output=avail -k . | tail -n 1)
           
@@ -30,17 +35,26 @@ jobs:
           fi
 
           echo "--- MEMBUAT DISK VIRTUAL ${DISK_SIZE_MB}MB ---"
+          # Membuat disk QCOW2 yang dinamis (akan membesar sesuai kebutuhan, maksimum ${DISK_SIZE_MB})
           qemu-img create -f qcow2 debian_disk.qcow2 ${DISK_SIZE_MB}M
           
           echo "DISK_SIZE_MB=${DISK_SIZE_MB}MB" >> $GITHUB_ENV
           
-          # Unduh ISO Debian
+          # Unduh ISO Debian Netinstall terbaru
+          echo "--- MENGUNDUH ISO DEBIAN ---"
           wget -O debian.iso https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.2.0-amd64-netinst.iso
 
-      - name: 3. Jalankan QEMU (Background) dengan Disk IDE Index 1
+      - name: 3. Set Permissions for QEMU Files
         run: |
-          # Perbaikan: Menggunakan index=1 untuk disk virtual
-          # karena CD-ROM sudah menempati index=0.
+          # QEMU seringkali membutuhkan hak akses baca/tulis yang memadai, terutama saat menggunakan sudo
+          sudo chmod 666 debian_disk.qcow2
+          sudo chmod 444 debian.iso
+          echo "Hak akses file QEMU telah diatur."
+
+      - name: 4. Jalankan QEMU (Background) dengan Boot dari Hard Disk
+        run: |
+          # PENTING: -boot c memastikan QEMU akan boot dari hard disk
+          # setelah instalasi selesai dan VM me-reboot.
           echo "QEMU akan menggunakan disk berukuran ${{ env.DISK_SIZE_MB }}"
           sudo qemu-system-x86_64 \
             -enable-kvm \
@@ -48,8 +62,8 @@ jobs:
             -smp 2 \
             -m 4G \
             -drive file=debian.iso,media=cdrom \
-            -boot d \
             -drive file=debian_disk.qcow2,if=ide,index=1 \
+            -boot c \  # <--- Perbaikan di sini: Boot dari Hard Disk ('c')
             -net nic,model=virtio -net user \
             -vnc :0 \
             -device virtio-rng-pci \
@@ -58,18 +72,24 @@ jobs:
           
           echo "QEMU berjalan di VNC :0 (Port 5900)"
 
-      - name: 4. Jalankan NoVNC / Websockify (Background)
-        run: websockify --web=/usr/share/novnc/ 6080 localhost:5900 &
-
-      - name: 5. Start Cloudflare Tunnel & Generate URL
+      - name: 5. Jalankan NoVNC / Websockify (Background)
         run: |
+          echo "--- MEMULAI WEBSOCKIFY ---"
+          websockify --web=/usr/share/novnc/ 6080 localhost:5900 &
+
+      - name: 6. Start Cloudflare Tunnel & Generate URL
+        run: |
+          echo "--- MENGINSTALL DAN MEMULAI CLOUDFLARED TUNNEL ---"
+          # Mengunduh dan menginstal Cloudflared
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared-linux-amd64
           sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
 
+          # Membuat tunnel ke port websockify
           cloudflared tunnel --url http://127.0.0.1:6080 > cloudflared.log 2>&1 &
           sleep 10
           
+          # Mengambil URL yang dibuat oleh Cloudflared
           TUNNEL_URL=$(grep -o 'https://[^ ]*.trycloudflare.com' cloudflared.log | head -n 1)
           
           if [ -z "$TUNNEL_URL" ]; then
@@ -81,10 +101,11 @@ jobs:
           echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
           echo "::notice::Akses Browser Di Sini: $TUNNEL_URL"
 
-      - name: 6. Keep Alive (6 Jam)
+      - name: 7. Keep Alive (6 Jam)
         run: |
           echo "======================================================"
-          echo "  ✅ SUKSES! Disk dialokasikan (${{ env.DISK_SIZE_MB }}) menggunakan IDE Index 1."
+          echo "  ✅ SUKSES! Disk dialokasikan (${{ env.DISK_SIZE_MB }}). QEMU Boot: Hard Disk (-boot c)."
           echo "  Buka link ini di browser Anda: ${{ env.TUNNEL_URL }}"
+          echo "  Anda memiliki waktu 6 jam sebelum runner dihentikan."
           echo "======================================================"
           sleep 21600
