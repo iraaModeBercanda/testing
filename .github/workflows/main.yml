@@ -60,7 +60,7 @@ jobs:
             -enable-kvm \
             -cpu host \
             -smp 2 \
-            -m 4G \
+            -m 8G \
             -drive file=debian.iso,media=cdrom \
             -drive file=debian_disk.qcow2,if=ide,index=1 \
             -boot c \  # <--- Perbaikan di sini: Boot dari Hard Disk ('c')
