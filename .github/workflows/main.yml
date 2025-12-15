@@ -37,10 +37,10 @@ jobs:
           # Unduh ISO Debian
           wget -O debian.iso https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.2.0-amd64-netinst.iso
 
-      - name: 3. Jalankan QEMU (Background) dengan Disk IDE
+      - name: 3. Jalankan QEMU (Background) dengan Disk IDE Index 1
         run: |
-          # Mengganti if=sata dengan if=ide karena sata tidak didukung di runner ini.
-          # IDE adalah emulasi yang paling universal.
+          # Perbaikan: Menggunakan index=1 untuk disk virtual
+          # karena CD-ROM sudah menempati index=0.
           echo "QEMU akan menggunakan disk berukuran ${{ env.DISK_SIZE_MB }}"
           sudo qemu-system-x86_64 \
             -enable-kvm \
@@ -49,7 +49,7 @@ jobs:
             -m 4G \
             -drive file=debian.iso,media=cdrom \
             -boot d \
-            -drive file=debian_disk.qcow2,if=ide,index=0 \
+            -drive file=debian_disk.qcow2,if=ide,index=1 \
             -net nic,model=virtio -net user \
             -vnc :0 \
             -device virtio-rng-pci \
@@ -84,7 +84,7 @@ jobs:
       - name: 6. Keep Alive (6 Jam)
         run: |
           echo "======================================================"
-          echo "  ✅ SUKSES! Disk dialokasikan (${{ env.DISK_SIZE_MB }}) menggunakan IDE."
+          echo "  ✅ SUKSES! Disk dialokasikan (${{ env.DISK_SIZE_MB }}) menggunakan IDE Index 1."
           echo "  Buka link ini di browser Anda: ${{ env.TUNNEL_URL }}"
           echo "======================================================"
           sleep 21600
