@@ -52,7 +52,7 @@ jobs:
             -enable-kvm \
             -cpu host \
             -smp 2 \
-            -m 4G \
+            -m 8G \
             -drive file=debian_disk.qcow2,format=qcow2,if=ide,index=0,media=disk \
             -drive file=debian.iso,format=raw,media=cdrom,if=ide,index=2 \
             -boot order=cd,menu=on \
