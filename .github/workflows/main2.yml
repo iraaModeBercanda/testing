@@ -1,0 +1,125 @@
+name: Debian 13 Cloud (Fast Boot & Cache)
+
+on: 
+  workflow_dispatch: 
+
+jobs:
+  run-vm:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. SETUP ENV & TOOLS
+      - name: 1. Install QEMU & Cloud Utils
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y qemu-kvm qemu-utils novnc websockify cloud-image-utils
+          sudo ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
+
+      # 2. CACHING IMAGE
+      - name: 2. Cache Debian Cloud Image
+        id: cache-debian
+        uses: actions/cache@v4
+        with:
+          path: original_debian.qcow2
+          # Ganti key jika ingin download ulang versi terbaru
+          key: debian-trixie-genericcloud-v1 
+
+      # 3. PREPARE DISK (RESIZE & CONFIG)
+      - name: 3. Prepare Image & Cloud-Init
+        run: |
+          # A. Download Image jika tidak ada di Cache
+          if [ ! -f original_debian.qcow2 ]; then
+            echo "--- Downloading Debian 13 (Trixie) Cloud Image ---"
+            # URL Daily Build untuk Debian Trixie (Testing/Next 13)
+            wget -O original_debian.qcow2 https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.qcow2
+          else
+            echo "--- Menggunakan Image dari Cache ---"
+          fi
+
+          # B. Buat Copy Disk Kerja (Jangan edit file cache langsung)
+          cp original_debian.qcow2 disk.qcow2
+
+          # C. Hitung & Resize Disk (Expand Image kecil ke Ukuran Maksimal Runner)
+          DISK_AVAILABLE_KB=$(df --output=avail -k . | tail -n 1)
+          DISK_SIZE_MB=$(( (DISK_AVAILABLE_KB * 85) / 102400 ))
+          if [ $DISK_SIZE_MB -lt 5120 ]; then DISK_SIZE_MB=5120; fi
+          
+          echo "--- Expanding Disk to ${DISK_SIZE_MB}MB ---"
+          qemu-img resize disk.qcow2 ${DISK_SIZE_MB}M
+          chmod 777 disk.qcow2
+
+          # D. Buat Cloud-Init Config (User-Data)
+          # Ini yang akan men-set password otomatis saat booting pertama kali
+          cat <<EOF > user-data
+          #cloud-config
+          hostname: debian-vm
+          users:
+            - name: root
+              passwd: password123
+              lock_passwd: false
+              shell: /bin/bash
+            - name: admin
+              passwd: admin
+              groups: sudo
+              lock_passwd: false
+              shell: /bin/bash
+          chpasswd:
+            list: |
+              root:password123
+              admin:admin
+            expire: False
+          ssh_pwauth: True
+          package_update: true
+          # Optional: Install tools dasar
+          packages:
+            - neofetch
+            - htop
+            - curl
+          runcmd:
+            - echo "System Ready!"
+          EOF
+          
+          # E. Generate Seed ISO untuk Cloud-Init
+          cloud-localds seed.img user-data
+
+      # 4. RUN VM (VIRTIO MODE)
+      - name: 4. Start QEMU (NoVNC Ready)
+        run: |
+          echo "Booting VM... Password user 'admin' adalah 'admin', Root adalah 'password123'"
+          
+          sudo qemu-system-x86_64 \
+            -enable-kvm \
+            -cpu host \
+            -smp 4 \
+            -m 10G \
+            -device virtio-blk-pci,drive=hd0 \
+            -drive file=disk.qcow2,if=none,format=qcow2,id=hd0 \
+            -device virtio-blk-pci,drive=seed \
+            -drive file=seed.img,if=none,format=raw,id=seed \
+            -netdev user,id=net0 \
+            -device virtio-net-pci,netdev=net0 \
+            -vnc :0 \
+            -device virtio-rng-pci \
+            -daemonize \
+            -display none
+            
+          echo "VM Running..."
+
+      # 5. EXPOSE NETWORK
+      - name: 5. Start NoVNC & Cloudflare Tunnel
+        run: |
+          websockify --web=/usr/share/novnc/ 6080 localhost:5900 &
+          
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          ./cloudflared-linux-amd64 tunnel --url http://127.0.0.1:6080 > cloudflared.log 2>&1 &
+          
+          sleep 8
+          TUNNEL_URL=$(grep -o 'https://[^ ]*.trycloudflare.com' cloudflared.log | head -n 1)
+          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+          
+          echo "::notice title=LOGIN INFO::User: admin | Pass: admin || Root Pass: password123"
+          echo "::notice title=AKSES DISINI::$TUNNEL_URL"
+
+      - name: 6. Keep Alive
+        run: sleep 21600
